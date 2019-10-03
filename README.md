@@ -134,6 +134,8 @@ label: 根据iou标注有{0,-1,1}的数组
 
 对于原代码,本人删除了部分英文注释,**并将部分导入语句**
 
+原始README.MD文件改名为**README1.MD**
+
 ```python
 import cupy as xp
 # 改为 
