@@ -7,7 +7,7 @@ from six import __init__
 
 def loc2bbox(src_bbox, loc):
     """Decode bounding boxes from bounding box offsets and scales.
-
+    将源bbox+偏移和比例 == 解码 ==>目标bbox
     Given bounding box offsets and scales computed by
     :meth:`bbox2loc`, this function decodes the representation to
     coordinates in 2D image coordinates.
@@ -58,7 +58,7 @@ def loc2bbox(src_bbox, loc):
     src_ctr_y = src_bbox[:, 0] + 0.5 * src_height
     src_ctr_x = src_bbox[:, 1] + 0.5 * src_width
 
-    dy = loc[:, 0::4]
+    dy = loc[:, 0::4]  #可能等于dy = loc[:, 0]
     dx = loc[:, 1::4]
     dh = loc[:, 2::4]
     dw = loc[:, 3::4]
@@ -79,7 +79,7 @@ def loc2bbox(src_bbox, loc):
 
 def bbox2loc(src_bbox, dst_bbox):
     """Encodes the source and the destination bounding boxes to "loc".
-
+    将源bbox和目标bbox == 编码 ==>为“loc"
     Given bounding boxes, this function computes offsets and scales
     to match the source bounding boxes to the target bounding boxes.
     Mathematcially, given a bounding box whose center is
@@ -231,7 +231,7 @@ def generate_anchor_base(base_size=16, ratios=[0.5, 1, 2],
 
     anchor_base = np.zeros((len(ratios) * len(anchor_scales), 4),
                            dtype=np.float32)
-    for i in six.moves.range(len(ratios)):
+    for i in six.moves.range(len(ratios)):  #six.moves.range = range
         for j in six.moves.range(len(anchor_scales)):
             h = base_size * anchor_scales[j] * np.sqrt(ratios[i])
             w = base_size * anchor_scales[j] * np.sqrt(1. / ratios[i])

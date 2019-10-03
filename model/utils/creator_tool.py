@@ -1,27 +1,22 @@
 import numpy as np
-import cupy as cp
-
+import numpy as cp
 from model.utils.bbox_tools import bbox2loc, bbox_iou, loc2bbox
 from model.utils.nms import non_maximum_suppression
 
-
 class ProposalTargetCreator(object):
     """Assign ground truth bounding boxes to given RoIs.
+        将(ground truth)地面实况(bounding boxes)边界框分配给给定的ROI。
+        ProposalCreator产生2000个ROIS，再经过本ProposalTargetCreator的筛选产生128个用于自身的训练，规则如下:
+            1. ROIS和GroundTruth_bbox的IOU大于0.5,选取一些(比如说本实验的32个)作为正样本
+            2. 选取ROIS和GroundTruth_bbox的IOUS小于等于0（或者0.1）的选取一些比如说选取128-32=96个作为负样本
+            然后分别对ROI_Headers进行训练
 
-    The :meth:`__call__` of this class generates training targets
-    for each object proposal.
-    This is used to train Faster RCNN [#]_.
-
-    .. [#] Shaoqing Ren, Kaiming He, Ross Girshick, Jian Sun. \
-    Faster R-CNN: Towards Real-Time Object Detection with \
-    Region Proposal Networks. NIPS 2015.
+            为了便于训练，对选择出的128个RoIs，还对他们的gt_roi_loc 进行标准化处理（减去均值除以标准差）
 
     Args:
-        n_sample (int): The number of sampled regions.
-        pos_ratio (float): Fraction of regions that is labeled as a
-            foreground.
-        pos_iou_thresh (float): IoU threshold for a RoI to be considered as a
-            foreground.
+        n_sample (int): 要保留的iou数目
+        pos_ratio (float): 作为正样本的比例
+        pos_iou_thresh (float): 作为正样本的阈值
         neg_iou_thresh_hi (float): RoI is considered to be the background
             if IoU is in
             [:obj:`neg_iou_thresh_hi`, :obj:`neg_iou_thresh_hi`).
@@ -44,72 +39,48 @@ class ProposalTargetCreator(object):
                  loc_normalize_mean=(0., 0., 0., 0.),
                  loc_normalize_std=(0.1, 0.1, 0.2, 0.2)):
         """Assigns ground truth to sampled proposals.
-
-        This function samples total of :obj:`self.n_sample` RoIs
-        from the combination of :obj:`roi` and :obj:`bbox`.
-        The RoIs are assigned with the ground truth class labels as well as
-        bounding box offsets and scales to match the ground truth bounding
-        boxes. As many as :obj:`pos_ratio * self.n_sample` RoIs are
-        sampled as foregrounds.
-
-        Offsets and scales of bounding boxes are calculated using
-        :func:`model.utils.bbox_tools.bbox2loc`.
-        Also, types of input arrays and output arrays are same.
-
-        Here are notations.
-
-        * :math:`S` is the total number of sampled RoIs, which equals \
-            :obj:`self.n_sample`.
-        * :math:`L` is number of object classes possibly including the \
-            background.
+            为抽样方案分配ground truth
 
         Args:
-            roi (array): Region of Interests (RoIs) from which we sample.
-                Its shape is :math:`(R, 4)`
-            bbox (array): The coordinates of ground truth bounding boxes.
-                Its shape is :math:`(R', 4)`.
-            label (array): Ground truth bounding box labels. Its shape
-                is :math:`(R',)`. Its range is :math:`[0, L - 1]`, where
-                :math:`L` is the number of foreground classes.
-            loc_normalize_mean (tuple of four floats): Mean values to normalize
-                coordinates of bouding boxes.
-            loc_normalize_std (tupler of four floats): Standard deviation of
-                the coordinates of bounding boxes.
+            roi (array):经过RPN网络的ProposalCreator的rois (R, 4)
+            bbox (array): ground truth bounding boxes (R', 4)`.
+            label (array): Ground truth bounding box labels (R',1 )`.
+                            范围是[0, L - 1], L是类别数
+            loc_normalize_mean (tuple of four floats): bouding boxes的均值
+            loc_normalize_std (tupler of four floats): bounding boxes的方差
 
         Returns:
-            (array, array, array):
 
-            * **sample_roi**: Regions of interests that are sampled. \
-                Its shape is :math:`(S, 4)`.
-            * **gt_roi_loc**: Offsets and scales to match \
-                the sampled RoIs to the ground truth bounding boxes. \
-                Its shape is :math:`(S, 4)`.
-            * **gt_roi_label**: Labels assigned to sampled RoIs. Its shape is \
-                :math:`(S,)`. Its range is :math:`[0, L]`. The label with \
-                value 0 is the background.
-
+            * **sample_roi**: 再次经过下采样的n_sample个rois(S, 4) S= n_sample
+            * **gt_roi_loc**: sample_roi与与之匹配最近的真实坐标框的偏差sample_roi(S, 4)`.
+            * **gt_roi_label**: gt_roi_loc所匹配的真实坐标框的类别
+                范围是[0, L - 1], L是类别数,O代表背景
         """
-        n_bbox, _ = bbox.shape
+        n_bbox, _ = bbox.shape  # ground truth bounding boxes.
 
-        roi = np.concatenate((roi, bbox), axis=0)
+        roi = np.concatenate((roi, bbox), axis=0)  # 列变长,就是有更多的行,但是为什么要这样操作???????????
 
         pos_roi_per_image = np.round(self.n_sample * self.pos_ratio)
-        iou = bbox_iou(roi, bbox)
-        gt_assignment = iou.argmax(axis=1)
-        max_iou = iou.max(axis=1)
-        # Offset range of classes from [0, n_fg_class - 1] to [1, n_fg_class].
-        # The label with value 0 is the background.
+        iou = bbox_iou(roi, bbox)  # 若roi为[a,4],bbox为[b,4],则bbox_iou为[a,b]
+        gt_assignment = iou.argmax(axis=1)  # 返回每行的最大值的索引
+        max_iou = iou.max(axis=1)  # 返回每行的最大值
         gt_roi_label = label[gt_assignment] + 1
+        """
+        gt_assignment为[(roi.shape[0]+bbox.shape[0]),1],(roi为原始的,即形参)
+        label为[bbox.shape[0],1],
+        由于gt_assignment为每行的最大索引,故最大为num_truth_bounding_boxes.
+        因此label[gt_assignment]是合理的,切返回值为[(roi.shape[0]+bbox.shape[0]),1]size的
+        """
 
-        # Select foreground RoIs as those with >= pos_iou_thresh IoU.
+        # 筛选出大于前景IoU阈值的RoI,并随机抽取一定数量的pos_RoI
         pos_index = np.where(max_iou >= self.pos_iou_thresh)[0]
         pos_roi_per_this_image = int(min(pos_roi_per_image, pos_index.size))
         if pos_index.size > 0:
             pos_index = np.random.choice(
-                pos_index, size=pos_roi_per_this_image, replace=False)
+                pos_index, size=pos_roi_per_this_image, replace=False)  # 随机选择大于阈值的pos_roi_per_this_image个anchor
 
-        # Select background RoIs as those within
-        # [neg_iou_thresh_lo, neg_iou_thresh_hi).
+
+        # 筛选出满足IoU阈值的负类RoI,并随机抽取一定数量的neg_RoI
         neg_index = np.where((max_iou < self.neg_iou_thresh_hi) &
                              (max_iou >= self.neg_iou_thresh_lo))[0]
         neg_roi_per_this_image = self.n_sample - pos_roi_per_this_image
@@ -135,27 +106,13 @@ class ProposalTargetCreator(object):
 
 class AnchorTargetCreator(object):
     """Assign the ground truth bounding boxes to anchors.
+    将图像的事实 bounding boxes（边界框）分配给anchors 去训练faster_RCNN中的RPN网络
 
-    Assigns the ground truth bounding boxes to anchors for training Region
-    Proposal Networks introduced in Faster R-CNN [#]_.
-
-    Offsets and scales to match anchors to the ground truth are
-    calculated using the encoding scheme of
-    :func:`model.utils.bbox_tools.bbox2loc`.
-
-    .. [#] Shaoqing Ren, Kaiming He, Ross Girshick, Jian Sun. \
-    Faster R-CNN: Towards Real-Time Object Detection with \
-    Region Proposal Networks. NIPS 2015.
-
-    Args:
-        n_sample (int): The number of regions to produce.
-        pos_iou_thresh (float): Anchors with IoU above this
-            threshold will be assigned as positive.
-        neg_iou_thresh (float): Anchors with IoU below this
-            threshold will be assigned as negative.
-        pos_ratio (float): Ratio of positive regions in the
-            sampled regions.
-
+      Args:
+        n_sample (int): 要产生坐标的数量
+        pos_iou_thresh (float): 大于 IoU 的阈值即正类.
+        neg_iou_thresh (float): 小于 IoU 的阈值即负类.
+        pos_ratio (float): 正类的比例
     """
 
     def __init__(self,
@@ -169,69 +126,73 @@ class AnchorTargetCreator(object):
 
     def __call__(self, bbox, anchor, img_size):
         """Assign ground truth supervision to sampled subset of anchors.
-
-        Types of input arrays and output arrays are same.
-
-        Here are notations.
-
-        * :math:`S` is the number of anchors.
-        * :math:`R` is the number of bounding boxes.
-
         Args:
-            bbox (array): Coordinates of bounding boxes. Its shape is
-                :math:`(R, 4)`.
-            anchor (array): Coordinates of anchors. Its shape is
-                :math:`(S, 4)`.
-            img_size (tuple of ints): A tuple :obj:`H, W`, which
-                is a tuple of height and width of an image.
+            bbox (array): 真实目标框的anchor box(R, 4)`.
+            anchor (array): fearch map上所有的anchor (S, 4)`.
+            img_size (tuple of ints): 图像的长和宽
 
         Returns:
-            (array, array):
-
-            #NOTE: it's scale not only  offset
-            * **loc**: Offsets and scales to match the anchors to \
-                the ground truth bounding boxes. Its shape is :math:`(S, 4)`.
-            * **label**: Labels of anchors with values \
-                :obj:`(1=positive, 0=negative, -1=ignore)`. Its shape \
-                is :math:`(S,)`.
-
+            * **loc**: 为每个anchors与最大iou的truth bounding boxes的Offsets回归 (S, 4)`.
+            * **label**: 所有anchor所匹配到最近真实框的label,其中1代表正类,0代表负类,-1表示不想关
         """
 
         img_H, img_W = img_size
-
-        n_anchor = len(anchor)
-        inside_index = _get_inside_index(anchor, img_H, img_W)
-        anchor = anchor[inside_index]
+        n_anchor = len(anchor)  # ==anchor.shape[0](anchor为原始的,因为后面有 _get_inside_index操作)
+        inside_index = _get_inside_index(anchor, img_H, img_W)  # 有的anchor值比如H,为非法,即超过img_H, img_W,剔除它们,后面用_unmap进行恢复
+        anchor = anchor[inside_index]  # anchor.shape[0] = len(inside_index)
         argmax_ious, label = self._create_label(
-            inside_index, anchor, bbox)
+            inside_index, anchor, bbox) #不用传入inside_index
+        # label: 根据iou标注有0, -1, 1的数组,此主要为了训练FPN
+        # argmax_ious: 行最大索引, 每个anchor_box对应的最大iou的gt_anchor_box
+        # label: 根据iou标注有0, -1, 1的数组
 
-        # compute bounding box regression targets
         loc = bbox2loc(anchor, bbox[argmax_ious])
 
-        # map up to original set of anchors
+        # 映射到原始坐标
         label = _unmap(label, n_anchor, inside_index, fill=-1)
         loc = _unmap(loc, n_anchor, inside_index, fill=0)
 
         return loc, label
 
     def _create_label(self, inside_index, anchor, bbox):
+        """ 此函数创建label:
+        计算gt_anchor_box和anchor_box的iou
+        主要是对anchor_box操作的:
+             默认所有anchor_box所对应的label为-1
+             当anchor_box所匹配的最大iou的gt_anchor_box大于pos_iou_thresh时,anchor_box所对应的label为1
+             当anchor_box所匹配的最大iou的gt_anchor_box小于neg_iou_thresh时,anchor_box所对应的label为0
+             当gt_anchor_box所匹配的最大iou的anchor_box,anchor_box所对应的label为1
+             当label为1的数量大于pos_ratio *n_sample时,需要在label为1的索引中随机选择pos_ratio *n_sample
+             当label为0的数量大于neg_ratio *n_sample时,需要在label为0的索引中随机选择neg_ratio *n_sample
+
+        :param inside_index:  不用传入inside_index参数:inside_index==anchor.shap[0]
+        :param anchor: 在fearuth_map生成的W*H*9的anchor_box
+        :param bbox:  为truth_anchor_box
+        :return:
+            argmax_ious: 行最大索引,每个anchor_box对应的最大iou的gt_anchor_box
+            label: 根据iou标注有0,-1,1的数组
+        """
         # label: 1 is positive, 0 is negative, -1 is dont care
+        # 不用传入inside_index,inside_index==anchor.shape[0]
         label = np.empty((len(inside_index),), dtype=np.int32)
-        label.fill(-1)
+        label.fill(-1) #默认为-1
 
         argmax_ious, max_ious, gt_argmax_ious = \
             self._calc_ious(anchor, bbox, inside_index)
+        """
+            argmax_ious: 行最大索引,每个anchor_box对应的最大iou的gt_anchor_box
+            max_ious: 行最大值
+            gt_argmax_ious: 列最大索引,每个gt_anchor_box对应的最大iou的anchor_box
+        """
 
-        # assign negative labels first so that positive labels can clobber them
+        # 低于neg_iou_thresh阈值的分为负类
         label[max_ious < self.neg_iou_thresh] = 0
 
-        # positive label: for each gt, anchor with highest iou
+        # 将所匹配的最大或者大于阈值的分为正类
         label[gt_argmax_ious] = 1
-
-        # positive label: above threshold IOU
         label[max_ious >= self.pos_iou_thresh] = 1
 
-        # subsample positive labels if we have too many
+        # 如果多于一定数量,继续采样
         n_pos = int(self.pos_ratio * self.n_sample)
         pos_index = np.where(label == 1)[0]
         if len(pos_index) > n_pos:
@@ -239,7 +200,7 @@ class AnchorTargetCreator(object):
                 pos_index, size=(len(pos_index) - n_pos), replace=False)
             label[disable_index] = -1
 
-        # subsample negative labels if we have too many
+        # 如果多于一定数量,继续采样
         n_neg = self.n_sample - np.sum(label == 1)
         neg_index = np.where(label == 0)[0]
         if len(neg_index) > n_neg:
@@ -250,20 +211,33 @@ class AnchorTargetCreator(object):
         return argmax_ious, label
 
     def _calc_ious(self, anchor, bbox, inside_index):
-        # ious between the anchors and the gt boxes
+        """
+        ious between the anchors and the gt boxes
+        主要计算ious的行和列的最大值和索引:
+        :param anchor: 在fearuth_map生成的W*H*9的anchor_box
+        :param bbox:  为truth_anchor_box
+        :param inside_index:  不用传入inside_index参数:inside_index==anchor.shap[0]
+        :return:
+            argmax_ious: 行最大索引
+            max_ious: 行最大值
+            gt_argmax_ious: 列最大索引
+        """
+
         ious = bbox_iou(anchor, bbox)
-        argmax_ious = ious.argmax(axis=1)
+        argmax_ious = ious.argmax(axis=1)  # 行最大索引,即每个anchor对应的最大truth_anchor_box
         max_ious = ious[np.arange(len(inside_index)), argmax_ious]
-        gt_argmax_ious = ious.argmax(axis=0)
+        gt_argmax_ious = ious.argmax(axis=0)  # 列最大索引,即每个truth_anchor_box对应的最大anchor
         gt_max_ious = ious[gt_argmax_ious, np.arange(ious.shape[1])]
         gt_argmax_ious = np.where(ious == gt_max_ious)[0]
+        # 因为每个anchor_box只能对应一个最大iou的ruth_anchor_box,但是每个ruth_anchor_box可以对应多个最大iou的anchor_box
+        # argmax函数只能返回第一个最大值的索引
 
         return argmax_ious, max_ious, gt_argmax_ious
 
 
 def _unmap(data, count, index, fill=0):
-    # Unmap a subset of item (data) back to the original set of items (of
-    # size count)
+    # 在 AnchorTargetCreator中一开始就进行了_get_inside_index操作,使得后面对于anchor的一系列操作都是对修改后的操作
+    # 故现在根据_get_inside_index的inside_index将结果映射到原始anchor上
 
     if len(data.shape) == 1:
         ret = np.empty((count,), dtype=data.dtype)
@@ -271,14 +245,14 @@ def _unmap(data, count, index, fill=0):
         ret[index] = data
     else:
         ret = np.empty((count,) + data.shape[1:], dtype=data.dtype)
+        # 生成一个count行data.shape[1]列的empty矩阵,但是,but为什么要用emtpy,而不是最简单的np.ones((count,data.shape[1]))
         ret.fill(fill)
         ret[index, :] = data
     return ret
 
 
 def _get_inside_index(anchor, H, W):
-    # Calc indicies of anchors which are located completely inside of the image
-    # whose size is speficied.
+    # 有的anchor值比如H为非法,即超过img_H, img_W,剔除它们
     index_inside = np.where(
         (anchor[:, 0] >= 0) &
         (anchor[:, 1] >= 0) &
@@ -294,38 +268,14 @@ class ProposalCreator:
     # It's ok
     """Proposal regions are generated by calling this object.
 
-    The :meth:`__call__` of this object outputs object detection proposals by
-    applying estimated bounding box offsets
-    to a set of anchors.
-
-    This class takes parameters to control number of bounding boxes to
-    pass to NMS and keep after NMS.
-    If the paramters are negative, it uses all the bounding boxes supplied
-    or keep all the bounding boxes returned by NMS.
-
-    This class is used for Region Proposal Networks introduced in
-    Faster R-CNN [#]_.
-
-    .. [#] Shaoqing Ren, Kaiming He, Ross Girshick, Jian Sun. \
-    Faster R-CNN: Towards Real-Time Object Detection with \
-    Region Proposal Networks. NIPS 2015.
-
     Args:
-        nms_thresh (float): Threshold value used when calling NMS.
-        n_train_pre_nms (int): Number of top scored bounding boxes
-            to keep before passing to NMS in train mode.
-        n_train_post_nms (int): Number of top scored bounding boxes
-            to keep after passing to NMS in train mode.
-        n_test_pre_nms (int): Number of top scored bounding boxes
-            to keep before passing to NMS in test mode.
-        n_test_post_nms (int): Number of top scored bounding boxes
-            to keep after passing to NMS in test mode.
-        force_cpu_nms (bool): If this is :obj:`True`,
-            always use NMS in CPU mode. If :obj:`False`,
-            the NMS mode is selected based on the type of inputs.
-        min_size (int): A paramter to determine the threshold on
-            discarding bounding boxes based on their sizes.
-
+        nms_thresh (float): 调用NMS的boxes scored阈值
+        n_train_pre_nms (int):  在训练阶段通过NMS前的top boxes scored个数
+        n_train_post_nms (int): 在训练阶段通过NMS后的top boxes scored个数
+        n_test_pre_nms (int): 在测试阶段通过NMS前的top boxes scored个数
+        n_test_post_nms (int): 在测试阶段通过NMS后的top boxes scored个数
+        force_cpu_nms (bool): 是否强制使用CPU模式,如果True则采用CPU mode,如果否则和输入类型一致
+        min_size (int): 当小于这边参数时会默认舍弃该 anchors
     """
 
     def __init__(self,
@@ -347,43 +297,25 @@ class ProposalCreator:
 
     def __call__(self, loc, score,
                  anchor, img_size, scale=1.):
-        """input should  be ndarray
-        Propose RoIs.
-
-        Inputs :obj:`loc, score, anchor` refer to the same anchor when indexed
-        by the same index.
-
-        On notations, :math:`R` is the total number of anchors. This is equal
-        to product of the height and the width of an image and the number of
-        anchor bases per pixel.
-
-        Type of the output is same as the inputs.
-
+        """Propose RoIs.
+        首先对roi = loc2bbox(anchor, loc)进行预处理,燃后对score进行排序,再选择pre_nms个top score进入NMS
+        NMS阈值为nms_thresh,NMS后再选择前post_nms个roi作为ProposalCreator的返回值.
         Args:
-            loc (array): Predicted offsets and scaling to anchors.
-                Its shape is :math:`(R, 4)`.
-            score (array): Predicted foreground probability for anchors.
-                Its shape is :math:`(R,)`.
-            anchor (array): Coordinates of anchors. Its shape is
-                :math:`(R, 4)`.
-            img_size (tuple of ints): A tuple :obj:`height, width`,
-                which contains image size after scaling.
-            scale (float): The scaling factor used to scale an image after
-                reading it from a file.
+            R : w*h*9
+            loc (array): 预测anchors的偏移量比例。数据shape=(R, 4)
+            score (array): 预测anchors的前景概率。数据shape=(R,).
+            anchor (array): anchors坐标。数据shape=(R, 4).
+            img_size (tuple of ints：H,W): 包含缩放后的图像大小.
+            scale (float): 图像缩放比例.
 
         Returns:
             array:
-            An array of coordinates of proposal boxes.
-            Its shape is :math:`(S, 4)`. :math:`S` is less than
-            :obj:`self.n_test_post_nms` in test time and less than
-            :obj:`self.n_train_post_nms` in train time. :math:`S` depends on
-            the size of the predicted bounding boxes and the number of
-            bounding boxes discarded by NMS.
+                roi:proposal boxes坐标(array),数据shape=(S, 4):
+                S在测试时间小于n_test_post_nms，在训练时间小于n_train_post_nms。
+                S取决于预测边界框的大小和NMS丢弃的边界框的数量。
 
         """
-        # NOTE: when test, remember
-        # faster_rcnn.eval()
-        # to set self.traing = False
+        # NOTE: 在测试阶段,即faster_rcnn.eval(),需要设置self.traing = False,
         if self.parent_model.training:
             n_pre_nms = self.n_train_pre_nms
             n_post_nms = self.n_train_post_nms
@@ -391,17 +323,19 @@ class ProposalCreator:
             n_pre_nms = self.n_test_pre_nms
             n_post_nms = self.n_test_post_nms
 
-        # Convert anchors into proposal via bbox transformations.
-        # roi = loc2bbox(anchor, loc)
+        # 通过base_anchor和loc解码获得目标anchor(即[y_min,x_min, y_max, x_max])
+
         roi = loc2bbox(anchor, loc)
 
         # Clip predicted boxes to image.
+        #  slice(0, 4, 2 ) = [0,2]
+        # np.clip(a,b,c) a为一根数组,b为min,c为max,夹逼
         roi[:, slice(0, 4, 2)] = np.clip(
             roi[:, slice(0, 4, 2)], 0, img_size[0])
         roi[:, slice(1, 4, 2)] = np.clip(
             roi[:, slice(1, 4, 2)], 0, img_size[1])
 
-        # Remove predicted boxes with either height or width < threshold.
+        # 删除预测的boxes长或者宽小于min_size*scale的boxes
         min_size = self.min_size * scale
         hs = roi[:, 2] - roi[:, 0]
         ws = roi[:, 3] - roi[:, 1]
@@ -409,18 +343,17 @@ class ProposalCreator:
         roi = roi[keep, :]
         score = score[keep]
 
-        # Sort all (proposal, score) pairs by score from highest to lowest.
-        # Take top pre_nms_topN (e.g. 6000).
-        order = score.ravel().argsort()[::-1]
+        # score从高到低排序,选择前n_pre_nms个
+        order = score.ravel().argsort()[::-1]  # 将score拉伸并逆序（从高到低）排序
         if n_pre_nms > 0:
             order = order[:n_pre_nms]
-        roi = roi[order, :]
+        roi = roi[order, :]  # 此时的roi的第一行就是score得分最高的那个anchor对应的anchor_boxes
 
-        # Apply nms (e.g. threshold = 0.7).
-        # Take after_nms_topN (e.g. 300).
 
         # unNOTE: somthing is wrong here!
         # TODO: remove cuda.to_gpu
+        # 调用非极大值抑制函数，将重复的抑制掉，就可以将筛选后ROIS进行返回。
+        # 经过NMS处理后Train数据集得到2000个框，Test数据集得到300个框
         keep = non_maximum_suppression(
             cp.ascontiguousarray(cp.asarray(roi)),
             thresh=self.nms_thresh)

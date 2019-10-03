@@ -1,4 +1,4 @@
-from __future__ import  absolute_import
+from __future__ import absolute_import
 import torch as t
 from torch import nn
 from torchvision.models import vgg16
@@ -10,6 +10,7 @@ from utils.config import opt
 
 
 def decom_vgg16():
+
     # the 30th layer of features is relu of conv5_3
     if opt.caffe_pretrain:
         model = vgg16(pretrained=False)
@@ -38,21 +39,14 @@ def decom_vgg16():
 
 class FasterRCNNVGG16(FasterRCNN):
     """Faster R-CNN based on VGG-16.
-    For descriptions on the interface of this model, please refer to
-    :class:`model.faster_rcnn.FasterRCNN`.
 
     Args:
-        n_fg_class (int): The number of classes excluding the background.
-        ratios (list of floats): This is ratios of width to height of
-            the anchors.
-        anchor_scales (list of numbers): This is areas of anchors.
-            Those areas will be the product of the square of an element in
-            :obj:`anchor_scales` and the original area of the reference
-            window.
-
+        n_fg_class (int): 不包括背景的类别数
+        ratios (list of floats): anchors的长宽比例
+        anchor_scales (list of numbers):anchors的大小
     """
 
-    feat_stride = 16  # downsample 16x for output of conv5 in vgg16
+    feat_stride = 16  # vgg16的conv5一共下采样的步数
 
     def __init__(self,
                  n_fg_class=20,
@@ -84,22 +78,19 @@ class FasterRCNNVGG16(FasterRCNN):
 
 
 class VGG16RoIHead(nn.Module):
-    """Faster R-CNN Head for VGG-16 based implementation.
-    This class is used as a head for Faster R-CNN.
-    This outputs class-wise localizations and classification based on feature
-    maps in the given RoIs.
+    """Faster R-CNN Head for VGG-16 based implementation
+    VGG16RoIHead的输出是基于从RPN网络propose的RoIs提取特征后的分类和回归
     
     Args:
-        n_class (int): The number of classes possibly including the background.
-        roi_size (int): Height and width of the feature maps after RoI-pooling.
+        n_class (int): 包括背景的图像类别数
+        roi_size (int): 经过RoI-pooling后的feature maps的尺寸
         spatial_scale (float): Scale of the roi is resized.
-        classifier (nn.Module): Two layer Linear ported from vgg16
-
+        classifier (nn.Module):从torchvision.model.vgg16的后面两层线性分类器
     """
 
     def __init__(self, n_class, roi_size, spatial_scale,
                  classifier):
-        # n_class includes the background
+
         super(VGG16RoIHead, self).__init__()
 
         self.classifier = classifier
@@ -112,34 +103,25 @@ class VGG16RoIHead(nn.Module):
         self.n_class = n_class
         self.roi_size = roi_size
         self.spatial_scale = spatial_scale
-        self.roi = RoIPooling2D(self.roi_size, self.roi_size, self.spatial_scale)
+        self.roi = RoIPooling2D(self.roi_size, self.roi_size, self.spatial_scale)  # 目前没看懂
 
     def forward(self, x, rois, roi_indices):
         """Forward the chain.
-
-        We assume that there are :math:`N` batches.
-
+        假设批次为N
         Args:
             x (Variable): 4D image variable.
-            rois (Tensor): A bounding box array containing coordinates of
-                proposal boxes.  This is a concatenation of bounding box
-                arrays from multiple images in the batch.
-                Its shape is :math:`(R', 4)`. Given :math:`R_i` proposed
-                RoIs from the :math:`i` th image,
-                :math:`R' = \\sum _{i=1} ^ N R_i`.
-            roi_indices (Tensor): An array containing indices of images to
-                which bounding boxes correspond to. Its shape is :math:`(R',)`.
-
+            rois (Tensor): 经过RPN网络后的roi区域box[R,4],其中R为N个批次的roi个数之和
+            roi_indices (Tensor):[R,1]用来指示rois的某一行是哪个批次的
         """
         # in case roi_indices is  ndarray
         roi_indices = at.totensor(roi_indices).float()
         rois = at.totensor(rois).float()
-        indices_and_rois = t.cat([roi_indices[:, None], rois], dim=1)
+        indices_and_rois = t.cat([roi_indices[:, None], rois], dim=1)  # 将roi_indices插入到rois的第一列
         # NOTE: important: yx->xy
         xy_indices_and_rois = indices_and_rois[:, [0, 2, 1, 4, 3]]
         indices_and_rois =  xy_indices_and_rois.contiguous()
 
-        pool = self.roi(x, indices_and_rois)
+        pool = self.roi(x, indices_and_rois)  # roi pooling
         pool = pool.view(pool.size(0), -1)
         fc7 = self.classifier(pool)
         roi_cls_locs = self.cls_loc(fc7)

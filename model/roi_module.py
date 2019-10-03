@@ -8,7 +8,7 @@ from torch.autograd import Function
 
 from model.utils.roi_cupy import kernel_backward, kernel_forward
 
-Stream = namedtuple('Stream', ['ptr'])
+Stream = namedtuple('Stream', ['ptr'])  # 类似于tuple,Stream是一个对象,有['ptr']属性
 
 
 @cupy.util.memoize(for_each_device=True)
