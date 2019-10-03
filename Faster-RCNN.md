@@ -114,7 +114,7 @@ loss由两种组成，分别是loc_loss和cls_loss，且RPN和，RoI Head都会�
 返回：
 
 argmax_ious: 行最大索引,每个anchor_box对应的最大iou的gt_anchor_box
-label: 根据iou标注有0,-1,1的数组
+label: 根据iou标注有{0,-1,1}的数组
 
 
 
@@ -130,7 +130,17 @@ label: 根据iou标注有0,-1,1的数组
 
 
 
-大部分核心代码有注释，除了nms和roi pool等.
+大部分核心代码有注释，除了`nms`和`ROI Pooling`等.
+
+对于原代码,本人删除了部分英文注释,**并将部分导入语句**
+
+```python
+import cupy as xp
+# 改为 
+import numpy as xp
+```
+
+
 
 本人阅读顺序大致为
 
